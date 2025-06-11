@@ -1,0 +1,3 @@
+[submodule "extern/Atmosphere-libs"]
+	path = extern/Atmosphere-libs
+	url = https://github.com/Atmosphere-NX/Atmosphere-libs.git

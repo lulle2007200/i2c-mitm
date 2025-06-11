@@ -1,0 +1,32 @@
+CompileFlags:
+  Compiler: C:\Users\Christoph\AppData\Local\devkitPro\devkitA64\bin\aarch64-none-elf-g++.exe
+  Add:
+    - -isystemC:\Users\Christoph\AppData\Local\devkitPro\libnx\include
+    - -isystemextern\Atmosphere-libs\libexosphere\include
+    - -isystemextern\Atmosphere-libs\libmesosphere\include
+    - -isystemextern\Atmosphere-libs\libstratosphere\include
+    - -isystemextern\Atmosphere-libs\libvapours\include
+    - -DATMOSPHERE_OS_HORIZON
+    - -DATMOSPHERE_ARCH_ARM64
+    - -DATMOSPHERE_ARCH_ARM_V8A
+    - -DATMOSPHERE_CPU_ARM_CORTEX_A57
+    - -DATMOSPHERE_BOARD_NINTENDO_NX
+    - D__SWITCH__
+    - -DATMOSPHERE_IS_STRATOSPHERE
+    - -fno-short-enums
+---
+If:
+  PathMatch:
+    - .*\.h
+    - .*\.c
+CompileFlags:
+  Add:
+    - -std=c17
+---
+If:
+  PathMatch:
+    - .*\.hpp
+    - .*\.cpp
+CompileFlags:
+  Add:
+    - -std=c++23
