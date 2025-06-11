@@ -4,7 +4,7 @@ namespace ams::log {
 
     namespace {
 
-        constexpr const char LogFilePath[] = "sdmc:/i2c-mitm.log";
+        constexpr const char LogFilePath[] = "sdmc:/atmosphere/logs/i2c-mitm.log";
         fs::FileHandle LogFile;
         s64 LogOffset;
 
@@ -47,7 +47,7 @@ namespace ams::log {
 
         auto thread = os::GetCurrentThread();
         auto ts = os::GetSystemTick().ToTimeSpan();
-        len = util::TSNPrintf(buff, sizeof(buff), "[ts: %6lums t: %-22s p: %d/%d] ",
+        len = util::TSNPrintf(buff, sizeof(buff), "[ts: %6lums t: %-13s p: %d/%d] ",
             ts.GetMilliSeconds(),
             os::GetThreadNamePointer(thread),
             os::GetThreadPriority(thread) + 28,
@@ -74,7 +74,7 @@ namespace ams::log {
     }
 
     void DebugDataDumpImpl(const void *data, size_t size) {
-        size_t buff_size = 4*size + 1;
+        size_t buff_size = 4*size + 5;
         std::unique_ptr<char[]> buff(new char[buff_size]);
 
         R_ABORT_UNLESS(fs::OpenFile(&LogFile, LogFilePath, fs::OpenMode_Write | fs::OpenMode_AllowAppend));

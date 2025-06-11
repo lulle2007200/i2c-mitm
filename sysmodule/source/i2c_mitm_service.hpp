@@ -15,7 +15,6 @@
  */
 #pragma once
 #include <stratosphere.hpp>
-#include <stratosphere/i2c/i2c_types.hpp>
 
 #define AMS_I2C_SESSION_MITM_INTERFACE_INFO(C, H)                                                                                                                                                                                                                      \
     AMS_SF_METHOD_INFO(C, H,  0, Result, SendOld,               (const sf::InBuffer &in_data,             ::ams::i2c::TransactionOption option),                                           (in_data,         option),            hos::Version_Min, hos::Version_5_1_0) \
@@ -42,8 +41,9 @@ namespace ams::mitm::i2c {
     private:
         std::unique_ptr<::I2cSession> m_session;
         DeviceCode m_device_code;
+        ncm::ProgramId m_program_id;
     public:
-        I2cSessionService(std::unique_ptr<::I2cSession> session, DeviceCode device_code);
+        I2cSessionService(std::unique_ptr<::I2cSession> session, DeviceCode device_code, ncm::ProgramId program_id);
         virtual ~I2cSessionService();
 
         Result SendOld(const sf::InBuffer &in_data, ::ams::i2c::TransactionOption option);
@@ -56,10 +56,12 @@ namespace ams::mitm::i2c {
 
     private:
         bool ShouldLog();
-        void LogSendReceive(const u8 *data, size_t size, ::ams::i2c::TransactionOption option, bool is_send);
-        void LogSend(const u8 *data, size_t size, ::ams::i2c::TransactionOption option);
-        void LogReceive(const u8 *data, size_t size, ::ams::i2c::TransactionOption option);
-        void LogCommandList(const u8 *recv_data, size_t recv_size, const ::ams::i2c::I2cCommand *commands, size_t num_commands);
+        int LogPrintHeader(char *buf, size_t buf_size);
+        int LogPrintCommand(char *buf, size_t buf_size, const ::ams::i2c::I2cCommand *commands, size_t &num_commands);
+        void LogSendReceive(const u8 *data, size_t size, ::ams::i2c::TransactionOption option, bool is_send, Result result);
+        void LogSend(const u8 *data, size_t size, ::ams::i2c::TransactionOption option, Result result);
+        void LogReceive(const u8 *data, size_t size, ::ams::i2c::TransactionOption option, Result result);
+        void LogCommandList(const u8 *recv_data, size_t recv_size, const ::ams::i2c::I2cCommand *commands, size_t num_commands, Result result);
 
         Result HandleSendOverride(const u8 *data, size_t size, ::ams::i2c::TransactionOption);
     };

@@ -17,6 +17,7 @@
 #include <stratosphere.hpp>
 #include "i2c_mitm_module.hpp"
 
+#include "i2c_mitm_settings.hpp"
 #include "logging.hpp"
 
 namespace ams {
@@ -80,7 +81,11 @@ namespace ams {
     void Main() {
         ams::log::Initialize();
 
-        DEBUG_LOG("i2c-mitm sysmodule launched");
+        log::DebugLog("i2c-mitm sysmodule launched\n");
+
+        // Load config from SD
+        ams::mitm::i2c::InitializeConfig();
+        ams::mitm::i2c::LogConfig();
 
         // Launch mitm modules
         ams::mitm::i2c::Launch();
