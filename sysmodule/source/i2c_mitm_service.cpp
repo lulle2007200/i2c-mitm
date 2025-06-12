@@ -129,7 +129,7 @@ namespace ams::mitm::i2c {
     }
 
     bool I2cMitmService::ShouldMitmSession(DeviceCode device_code) {
-        /* Only mitm i2c session for bq24193 */
+        /* Only mitm i2c sessions for bq24193 */
         return device_code.GetInternalValue() == 0x39000001;
     }
 
@@ -142,6 +142,18 @@ namespace ams::mitm::i2c {
     bool I2cMitmService::ShouldMitm(const sm::MitmProcessInfo &process_info) {
         AMS_UNUSED(process_info);
         return true;
+    }
+
+    int GetVoltage(u8 val) {
+        int voltage = 3504;
+
+        for (u32 i = 2; i < 8; i++) {
+            if (val & (1 << i)) {
+                voltage += 4 << i;
+            }
+        }
+
+        return voltage;
     }
 
     Result I2cMitmService::OpenSessionForDev(sf::Out<sf::SharedPointer<II2cSession>> out, s32 bus_idx, u16 slave_address, ::ams::i2c::AddressingMode addressing_mode, ::ams::i2c::SpeedMode speed_mode) {
@@ -257,7 +269,7 @@ namespace ams::mitm::i2c {
                 const u8 *send_data = commands + idx;
                 idx += send_size - 1;
 
-                buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "[send, len: 0x02%" PRIx8 ", data: [", send_size);
+                buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "[send, len: 0x%02" PRIx8 ", data: [", send_size);
 
                 for(size_t i = 0; i < send_size; i++) {
                     buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "0x%02" PRIx8 "%s", send_data[i], i + 1 < send_size ? ", " : "");
@@ -343,11 +355,19 @@ namespace ams::mitm::i2c {
             R_RETURN(::ams::i2c::ResultNoOverride());
         }
 
+        const I2CMitmConfig &config = GetConfig();
+
         /* handle set charge voltage command */
-        if (data[0] == 0x04 && data[1] == 0xb2) {
+        if (data[0] == 0x04 /* && data[1] == 0xb2 */) {
+            if (!config.voltage_config) {
+                R_RETURN(::ams::i2c::ResultNoOverride());
+            }
+
             /* 0x04: charge voltage control register, 0xb2: 4.2V */
             buf_idx += this->LogPrintHeader(buf, buf_size);
-            buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "Overriding set voltage command, setting voltage to %" PRIi32 "mV", GetConfig().voltage);
+            buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "Overriding set voltage command, setting 0x%02" PRIx8 " (%" PRIi32 "mV) instead of 0x%02" PRIx8 " (%" PRIi32 "mV)", 
+                                       config.voltage_config, GetVoltage(config.voltage_config), 
+                                       data[1], GetVoltage(data[1]));
             DEBUG_LOG("%s", buf);
 
             Result result = serviceDispatchIn(&this->m_session.get()->s,
@@ -362,9 +382,13 @@ namespace ams::mitm::i2c {
 
         /* handle charge enable command */
         } else if(data[0] == 0x01 && ((data[1] >> 4) & 0x3) == 1) {
+            if (!config.voltage_config) {
+                R_RETURN(::ams::i2c::ResultNoOverride());
+            }
+
             /* 0x01: Power On Config Register, Bit 4:5 = 1: Battery Charge Enabled */
             buf_idx += this->LogPrintHeader(buf, buf_size);
-            buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "Charging is being enabled, also set charge voltage to %" PRIi32 "mV", GetConfig().voltage);
+            buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "Charging is being enabled, also set voltage to 0x%02" PRIx8 " (%" PRIi32 "mV)", config.voltage_config, GetVoltage(config.voltage_config));
             DEBUG_LOG("%s", buf);
 
             Result result = serviceDispatchIn(&this->m_session.get()->s,
