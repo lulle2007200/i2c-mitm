@@ -18,9 +18,7 @@
 #include "i2c_mitm_service.hpp"
 #include <switch/services/i2c.h>
 
-namespace ams::i2c {
-    R_DEFINE_ERROR_RESULT(NoOverride, 4);
-}
+
 
 namespace ams::mitm::i2c {
 
@@ -156,6 +154,27 @@ namespace ams::mitm::i2c {
         return voltage;
     }
 
+    sf::SharedPointer<II2cSession> I2cMitmService::GetI2cSessionForDevice(::I2cSession session, s32 bus_idx, s32 addr) {
+        AMS_UNUSED(bus_idx, addr);
+
+        return sf::CreateSharedObjectEmplaced<II2cSession, I2cSessionService>(std::make_unique<::I2cSession>(session), 
+                                                                              0, 
+                                                                              this->m_client_info.program_id);
+    }
+
+    sf::SharedPointer<II2cSession> I2cMitmService::GetI2cSessionForDevice(::I2cSession session, DeviceCode device_code) {
+        switch (device_code.GetInternalValue()) {
+        case 0x39000001:
+            return sf::CreateSharedObjectEmplaced<II2cSession, Bq24193I2cSessionService>(std::make_unique<::I2cSession>(session),
+                                                                                         device_code,
+                                                                                         this->m_client_info.program_id);
+        default:
+            return sf::CreateSharedObjectEmplaced<II2cSession, I2cSessionService>(std::make_unique<::I2cSession>(session),
+                                                                                  device_code,
+                                                                                  this->m_client_info.program_id);
+        }
+    }
+
     Result I2cMitmService::OpenSessionForDev(sf::Out<sf::SharedPointer<II2cSession>> out, s32 bus_idx, u16 slave_address, ::ams::i2c::AddressingMode addressing_mode, ::ams::i2c::SpeedMode speed_mode) {
         if (ShouldMitmSession(bus_idx, slave_address)) {
             DEBUG_LOG("OpenSessionForDev idx: %" PRIu32 ", addr: %" PRIu32 ", ProgID: 0x016%" PRIx64 ", i2c session mitm enabled" PRIu32,
@@ -172,7 +191,7 @@ namespace ams::mitm::i2c {
 
             const sf::cmif::DomainObjectId target_obj_id(serviceGetObjectId(&session.s));
 
-            out.SetValue(sf::CreateSharedObjectEmplaced<II2cSession, I2cSessionService>(std::make_unique<::I2cSession>(session), 0, this->m_client_info.program_id), target_obj_id);
+            out.SetValue(this->GetI2cSessionForDevice(session, bus_idx, slave_address), target_obj_id);
 
             R_SUCCEED();
         } else {
@@ -201,7 +220,8 @@ namespace ams::mitm::i2c {
 
             const sf::cmif::DomainObjectId target_obj_id(serviceGetObjectId(&session.s));
 
-            out.SetValue(sf::CreateSharedObjectEmplaced<II2cSession, I2cSessionService>(std::make_unique<::I2cSession>(session), device_code, this->m_client_info.program_id), target_obj_id);
+            out.SetValue(this->GetI2cSessionForDevice(session, device_code), target_obj_id);
+            // out.SetValue(sf::CreateSharedObjectEmplaced<II2cSession, I2cSessionService>(std::make_unique<::I2cSession>(session), device_code, this->m_client_info.program_id), target_obj_id);
 
             R_SUCCEED();
         } else {
@@ -213,15 +233,6 @@ namespace ams::mitm::i2c {
     int I2cSessionService::LogPrintHeader(char *buf, size_t buf_size) {
         const u32 dev_id = this->m_device_code.GetInternalValue();
         return util::TSNPrintf(buf, buf_size, "ProgID: 0x016%" PRIx64 ", I2C dev: 0x%08" PRIx32 " (%s): ", this->m_program_id.value, dev_id, DeviceCodeToName(dev_id).c_str());
-    }
-
-    bool I2cSessionService::ShouldLog() {
-        /* enable/disable logging per device here */
-        #ifdef DEBUG
-        return true;
-        #else
-        return false;
-        #endif
     }
 
     void I2cSessionService::LogSendReceive(const u8 *data, size_t size, ::ams::i2c::TransactionOption option, bool is_send, Result result) {
@@ -302,7 +313,7 @@ namespace ams::mitm::i2c {
 
     void I2cSessionService::LogCommandList(const u8 *recv_data, size_t recv_size, const ::ams::i2c::I2cCommand *commands, size_t num_commands, Result result) {
         AMS_UNUSED(recv_data, recv_size, commands, num_commands, result);
-        if (!ShouldLog()) {
+        if (!this->ShouldLog()) {
             return;
         }
 
@@ -333,6 +344,20 @@ namespace ams::mitm::i2c {
         DEBUG_LOG("%s", buf);
     }
 
+    void I2cSessionService::LogRetryPolicy(s32 max_retry_count, s32 retry_interval_us, Result result) {
+        if (!this->ShouldLog()) {
+            return;
+        }
+
+        static constexpr size_t buf_size = 0x400;
+        char buf[buf_size];
+        int buf_idx = 0;
+
+        buf_idx += this->LogPrintHeader(buf, buf_size);
+        buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "result: 0x%08" PRIx32 ", max retry count: %" PRIi32 ", retry interval us: %" PRIi32, result.GetValue(), max_retry_count, retry_interval_us);
+        
+        DEBUG_LOG("%s", buf);
+    }
 
     I2cSessionService::I2cSessionService(std::unique_ptr<::I2cSession> session, DeviceCode device_code, ncm::ProgramId program_id) : m_session(std::move(session)), m_device_code(device_code), m_program_id(program_id) { }
 
@@ -340,10 +365,166 @@ namespace ams::mitm::i2c {
         serviceClose(&this->m_session.get()->s);
     }
 
-    Result I2cSessionService::HandleSendOverride(const u8 *data, size_t size, ::ams::i2c::TransactionOption option) {
-        u8 override_voltage = GetConfig().voltage_config;
-        /* 0x04: charge voltage control register, 0xca: 4.304V, 0xe2: 4.4V, 0xb2: 4.2V*/
-        u8 override_voltage_cmd[2] = {0x04, override_voltage};
+
+
+    Result I2cSessionService::SendOld(const sf::InBuffer &in_data, ::ams::i2c::TransactionOption option){
+        Result result = SendOldCb(in_data, option);
+        R_SUCCEED_IF(R_SUCCEEDED(result));
+        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
+            R_THROW(result);
+        }
+
+        result = serviceDispatchIn(&this->m_session.get()->s,
+                                   0,
+                                   option,
+                                   .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcMapAlias},
+                                   .buffers = {{in_data.GetPointer(), in_data.GetSize()}});
+
+        this->LogSend(in_data.GetPointer(), in_data.GetSize(), option, result);
+
+        R_RETURN(result);
+    }
+
+    Result I2cSessionService::ReceiveOld(const sf::OutBuffer &out_data, ::ams::i2c::TransactionOption option){
+        Result result = ReceiveOldCb(out_data, option);
+        R_SUCCEED_IF(R_SUCCEEDED(result));
+        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
+            R_THROW(result);
+        }
+
+        result = serviceDispatchIn(&this->m_session.get()->s, 
+                                          1, 
+                                          option,
+                                          .buffer_attrs = {SfBufferAttr_Out | SfBufferAttr_HipcMapAlias},
+                                          .buffers = {{out_data.GetPointer(), out_data.GetSize()}});
+       
+        this->LogReceive(out_data.GetPointer(), out_data.GetSize(), option, result);
+
+        R_RETURN(result);
+    }
+
+    Result I2cSessionService::ExecuteCommandListOld(const sf::OutBuffer &rcv_buf, const sf::InPointerArray<::ams::i2c::I2cCommand> &command_list){
+        Result result = ExecuteCommandListOldCb(rcv_buf, command_list);
+        R_SUCCEED_IF(R_SUCCEEDED(result));
+        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
+            R_THROW(result);
+        }
+
+        result = serviceDispatch(&this->m_session.get()->s,
+                                        2,
+                                        .buffer_attrs= {SfBufferAttr_Out | SfBufferAttr_HipcMapAlias, SfBufferAttr_In | SfBufferAttr_HipcPointer},
+                                        .buffers = {{rcv_buf.GetPointer(), rcv_buf.GetSize()}, {command_list.GetPointer(), command_list.GetSize()}});
+
+        this->LogCommandList(rcv_buf.GetPointer(), rcv_buf.GetSize(), command_list.GetPointer(), command_list.GetSize(), result);
+
+        R_RETURN(result);
+    }
+
+    Result I2cSessionService::Send(const sf::InAutoSelectBuffer &in_data, ::ams::i2c::TransactionOption option){
+        Result result = SendCb(in_data, option);
+        R_SUCCEED_IF(R_SUCCEEDED(result));
+        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
+            R_THROW(result);
+        }
+
+        result = serviceDispatchIn(&this->m_session.get()->s,
+                                   10,
+                                   option,
+                                   .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcAutoSelect},
+                                   .buffers = {{in_data.GetPointer(), in_data.GetSize()}});
+
+        this->LogSend(in_data.GetPointer(), in_data.GetSize(), option, result);
+
+        R_RETURN(result);
+    }
+
+    Result I2cSessionService::Receive(const sf::OutAutoSelectBuffer &out_data, ::ams::i2c::TransactionOption option){
+        Result result = ReceiveCb(out_data, option);
+        R_SUCCEED_IF(R_SUCCEEDED(result));
+        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
+            R_THROW(result);
+        }
+
+        result = serviceDispatchIn(&this->m_session.get()->s, 
+                                          11, 
+                                          option,
+                                          .buffer_attrs = {SfBufferAttr_Out | SfBufferAttr_HipcAutoSelect},
+                                          .buffers = {{out_data.GetPointer(), out_data.GetSize()}});
+
+        this->LogReceive(out_data.GetPointer(), out_data.GetSize(), option, result);
+
+        R_RETURN(result);
+    }
+
+    Result I2cSessionService::ExecuteCommandList(const sf::OutAutoSelectBuffer &rcv_buf, const sf::InPointerArray<::ams::i2c::I2cCommand> &command_list){
+        Result result = ExecuteCommandListCb(rcv_buf, command_list);
+        R_SUCCEED_IF(R_SUCCEEDED(result));
+        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
+            R_THROW(result);
+        }
+
+        result = serviceDispatch(&this->m_session.get()->s,
+                                        12,
+                                        .buffer_attrs= {SfBufferAttr_Out | SfBufferAttr_HipcAutoSelect, SfBufferAttr_In | SfBufferAttr_HipcPointer},
+                                        .buffers = {{rcv_buf.GetPointer(), rcv_buf.GetSize()}, {command_list.GetPointer(), command_list.GetSize()}});
+
+        this->LogCommandList(rcv_buf.GetPointer(), rcv_buf.GetSize(), command_list.GetPointer(), command_list.GetSize(), result);
+
+        R_RETURN(result);
+    }
+
+    Result I2cSessionService::SetRetryPolicy(s32 max_retry_count, s32 retry_interval_us){
+        Result result = SetRetryPolicyCb(max_retry_count, retry_interval_us);
+        R_SUCCEED_IF(R_SUCCEEDED(result));
+        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
+            R_THROW(result);
+        }
+
+        const u32 in[] = {static_cast<u32>(max_retry_count), static_cast<u32>(retry_interval_us)};
+        result = serviceDispatchIn(&this->m_session.get()->s, 
+                                   13, 
+                                   in);
+
+        this->LogRetryPolicy(max_retry_count, retry_interval_us, result);
+
+        R_RETURN(result);
+    }
+
+    constinit util::Atomic<bool> Bq24193I2cSessionService::first_init_done = false;
+
+    Bq24193I2cSessionService::Bq24193I2cSessionService(std::unique_ptr<::I2cSession> session, DeviceCode device_code, ncm::ProgramId program_id) : I2cSessionService(std::move(session), device_code, program_id) {
+        if (!this->first_init_done.Exchange(true)) {
+            constexpr size_t buf_size = 0x100;
+            char buf[buf_size];
+            int buf_idx = 0;
+            buf_idx += this->LogPrintHeader(buf, buf_size);
+            buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "First bq24193 session, set initial voltage");
+            DEBUG_LOG("%s", buf);
+            this->SetVoltage(0xae);
+        }
+    }
+
+    Result Bq24193I2cSessionService::SetVoltage(u8 voltage_config) {
+        u8 cmd[2] = {0x04, voltage_config};
+
+        ::ams::i2c::TransactionOption option= static_cast<::ams::i2c::TransactionOption>(::ams::i2c::TransactionOption_StartCondition | ::ams::i2c::TransactionOption_StopCondition);
+
+        Result result = serviceDispatchIn(&this->m_session.get()->s,
+                                          10,
+                                          option,
+                                          .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcAutoSelect},
+                                          .buffers = {{cmd, sizeof(cmd)}});
+
+        this->LogSend(cmd, sizeof(cmd), option, result);
+
+        R_RETURN(result);
+    }
+
+    Result Bq24193I2cSessionService::SendCb(const sf::InAutoSelectBuffer &in_data, ::ams::i2c::TransactionOption option) {
+        AMS_UNUSED(option);
+
+        const u8 *data = in_data.GetPointer();
+        size_t size = in_data.GetSize();
 
         static constexpr size_t buf_size = 0x100;
         char buf[buf_size];
@@ -358,7 +539,7 @@ namespace ams::mitm::i2c {
         const I2CMitmConfig &config = GetConfig();
 
         /* handle set charge voltage command */
-        if (data[0] == 0x04 /* && data[1] == 0xb2 */) {
+        if (data[0] == 0x04 && GetVoltage(data[1]) >= 4192 ) {
             if (!config.voltage_config) {
                 R_RETURN(::ams::i2c::ResultNoOverride());
             }
@@ -370,123 +551,33 @@ namespace ams::mitm::i2c {
                                        data[1], GetVoltage(data[1]));
             DEBUG_LOG("%s", buf);
 
-            Result result = serviceDispatchIn(&this->m_session.get()->s,
-                                              10,
-                                              option,
-                                              .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcAutoSelect},
-                                              .buffers = {{override_voltage_cmd, sizeof(override_voltage_cmd)}});
-
-            this->LogSend(override_voltage_cmd, sizeof(override_voltage_cmd), option, result);
-
-            R_RETURN(result);
-
-        /* handle charge enable command */
-        } else if(data[0] == 0x01 && ((data[1] >> 4) & 0x3) == 1) {
-            if (!config.voltage_config) {
-                R_RETURN(::ams::i2c::ResultNoOverride());
-            }
-
-            /* 0x01: Power On Config Register, Bit 4:5 = 1: Battery Charge Enabled */
-            buf_idx += this->LogPrintHeader(buf, buf_size);
-            buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "Charging is being enabled, also set voltage to 0x%02" PRIx8 " (%" PRIi32 "mV)", config.voltage_config, GetVoltage(config.voltage_config));
-            DEBUG_LOG("%s", buf);
-
-            Result result = serviceDispatchIn(&this->m_session.get()->s,
-                                              10,
-                                              option,
-                                              .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcAutoSelect},
-                                              .buffers = {{override_voltage_cmd, sizeof(override_voltage_cmd)}});
-
-            this->LogSend(override_voltage_cmd, sizeof(override_voltage_cmd), option, result);
-
-            /* Still need to send the original command */
-            R_TRY(result);
-            R_RETURN(::ams::i2c::ResultNoOverride());
+            R_RETURN(this->SetVoltage(config.voltage_config));
         }
+        /* Also override voltage when charging is enabled */
+        // } else if(data[0] == 0x01 && ((data[1] >> 4) & 0x3) == 1) {
+        //     if (!config.voltage_config) {
+        //         R_RETURN(::ams::i2c::ResultNoOverride());
+        //     }
+
+        //     /* 0x01: Power On Config Register, Bit 4:5 = 1: Battery Charge Enabled */
+        //     buf_idx += this->LogPrintHeader(buf, buf_size);
+        //     buf_idx += util::TSNPrintf(buf + buf_idx, buf_size - buf_idx, "Charging is being enabled, also set voltage to 0x%02" PRIx8 " (%" PRIi32 "mV)", config.voltage_config, GetVoltage(config.voltage_config));
+        //     DEBUG_LOG("%s", buf);
+
+        //     Result result = serviceDispatchIn(&this->m_session.get()->s,
+        //                                       10,
+        //                                       option,
+        //                                       .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcAutoSelect},
+        //                                       .buffers = {{override_voltage_cmd, sizeof(override_voltage_cmd)}});
+
+        //     this->LogSend(override_voltage_cmd, sizeof(override_voltage_cmd), option, result);
+
+        //     /* Still need to send the original command */
+        //     R_TRY(result);
+        //     R_RETURN(::ams::i2c::ResultNoOverride());
+        // }
 
         R_RETURN(::ams::i2c::ResultNoOverride());
-    }
-
-    Result I2cSessionService::SendOld(const sf::InBuffer &in_data, ::ams::i2c::TransactionOption option){
-        Result result = serviceDispatchIn(&this->m_session.get()->s,
-                                   0,
-                                   option,
-                                   .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcMapAlias},
-                                   .buffers = {{in_data.GetPointer(), in_data.GetSize()}});
-
-        this->LogSend(in_data.GetPointer(), in_data.GetSize(), option, result);
-
-        R_RETURN(result);
-    }
-    Result I2cSessionService::ReceiveOld(const sf::OutBuffer &out_data, ::ams::i2c::TransactionOption option){
-        Result result = serviceDispatchIn(&this->m_session.get()->s, 
-                                          1, 
-                                          option,
-                                          .buffer_attrs = {SfBufferAttr_Out | SfBufferAttr_HipcMapAlias},
-                                          .buffers = {{out_data.GetPointer(), out_data.GetSize()}});
-       
-        this->LogReceive(out_data.GetPointer(), out_data.GetSize(), option, result);
-
-        R_RETURN(result);
-    }
-    Result I2cSessionService::ExecuteCommandListOld(const sf::OutBuffer &rcv_buf, const sf::InPointerArray<::ams::i2c::I2cCommand> &command_list){
-        Result result = serviceDispatch(&this->m_session.get()->s,
-                                        2,
-                                        .buffer_attrs= {SfBufferAttr_Out | SfBufferAttr_HipcMapAlias, SfBufferAttr_In | SfBufferAttr_HipcPointer},
-                                        .buffers = {{rcv_buf.GetPointer(), rcv_buf.GetSize()}, {command_list.GetPointer(), command_list.GetSize()}});
-
-        this->LogCommandList(rcv_buf.GetPointer(), rcv_buf.GetSize(), command_list.GetPointer(), command_list.GetSize(), result);
-
-        R_RETURN(result);
-    }
-    Result I2cSessionService::Send(const sf::InAutoSelectBuffer &in_data, ::ams::i2c::TransactionOption option){
-
-        Result result = this->HandleSendOverride(in_data.GetPointer(), in_data.GetSize(), option);
-
-        /* HandleSendOverride did handle the send */
-        R_SUCCEED_IF(R_SUCCEEDED(result));
-        /* HandleSendOverride did return an error that was not ResultNoOverride -> return the error */
-        if (!::ams::i2c::ResultNoOverride::Includes(result)) {
-            R_THROW(result);
-        }
-        /* No override, forward the send request */
-        result = serviceDispatchIn(&this->m_session.get()->s,
-                                   10,
-                                   option,
-                                   .buffer_attrs = {SfBufferAttr_In | SfBufferAttr_HipcAutoSelect},
-                                   .buffers = {{in_data.GetPointer(), in_data.GetSize()}});
-
-        this->LogSend(in_data.GetPointer(), in_data.GetSize(), option, result);
-
-        R_RETURN(result);
-    }
-    Result I2cSessionService::Receive(const sf::OutAutoSelectBuffer &out_data, ::ams::i2c::TransactionOption option){
-        Result result = serviceDispatchIn(&this->m_session.get()->s, 
-                                          11, 
-                                          option,
-                                          .buffer_attrs = {SfBufferAttr_Out | SfBufferAttr_HipcAutoSelect},
-                                          .buffers = {{out_data.GetPointer(), out_data.GetSize()}});
-
-        this->LogReceive(out_data.GetPointer(), out_data.GetSize(), option, result);
-
-        R_RETURN(result);
-    }
-    Result I2cSessionService::ExecuteCommandList(const sf::OutAutoSelectBuffer &rcv_buf, const sf::InPointerArray<::ams::i2c::I2cCommand> &command_list){
-
-        Result result = serviceDispatch(&this->m_session.get()->s,
-                                        12,
-                                        .buffer_attrs= {SfBufferAttr_Out | SfBufferAttr_HipcAutoSelect, SfBufferAttr_In | SfBufferAttr_HipcPointer},
-                                        .buffers = {{rcv_buf.GetPointer(), rcv_buf.GetSize()}, {command_list.GetPointer(), command_list.GetSize()}});
-
-        this->LogCommandList(rcv_buf.GetPointer(), rcv_buf.GetSize(), command_list.GetPointer(), command_list.GetSize(), result);
-
-        R_RETURN(result);
-    }
-    Result I2cSessionService::SetRetryPolicy(s32 max_retry_count, s32 retry_interval_us){
-        const u32 in[] = {static_cast<u32>(max_retry_count), static_cast<u32>(retry_interval_us)};
-        R_RETURN(serviceDispatchIn(&this->m_session.get()->s, 
-                                   13, 
-                                   in));
     }
 
 }

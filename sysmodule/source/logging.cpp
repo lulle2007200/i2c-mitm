@@ -9,7 +9,7 @@ namespace ams::log {
         s64 LogOffset;
 
         constinit os::SdkMutex g_log_lock;
-
+        
     }
 
     Result Initialize() {
