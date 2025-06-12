@@ -8,8 +8,8 @@ namespace ams::mitm::i2c {
 		constexpr const char config_file_path[] = "sdmc:/config/i2c_mitm/i2c_mitm.ini";
 
 		constinit I2CMitmConfig g_i2c_config = {
-			.voltage        = 4200,
-			.voltage_config = 0xb2,
+			.voltage        = 0x0,
+			.voltage_config = 0x0,
 		};
 
 		Result ParseInt(const char *value, int &out, int min = INT_MIN, int max = INT_MAX) {
@@ -25,7 +25,7 @@ namespace ams::mitm::i2c {
 			int tmp;
 			Result result = ParseInt(value, tmp, 3504, 4400);
 			if (R_FAILED(result)) {
-				log::DebugLog("Invalid voltage set in config (%" PRIi32"), must be in range 3504-4400mV. Using 4200mV\n");
+				log::DebugLog("Invalid voltage set in config (%" PRIi32"), must be in range 3504-4400mV. Not overriding voltage.\n");
 				R_THROW(result);
 			}
 
@@ -47,10 +47,6 @@ namespace ams::mitm::i2c {
 
 		int ConfigIniHandler(void *user, const char *section, const char *name, const char *value) {
 			Result &result = *static_cast<Result*>(user);
-
-			if (R_FAILED(result)) {
-				return 0;
-			}
 
 			if (strcasecmp(section, "battery") == 0) {
 				if (strcasecmp(name, "chrg_voltage") == 0) {
