@@ -1,4 +1,4 @@
-*** YOU PROBABLY DON'T WANT TO USE THIS ***
+**YOU PROBABLY DON'T WANT TO USE THIS**
 
 Originally, i made this  to monitor i2c communications. Can be used to override the i2c voltage change commands to the battery ic, but that alone won't be enough for hos to properly charge higher voltage batteries.
 
